@@ -1,0 +1,33 @@
+[submodule "ext/libio"]
+	path = ext/libio
+	url = /afs/ece.cmu.edu/project/abstract/repos/libio
+[submodule "ext/maker"]
+	path = ext/maker
+	url = /afs/ece.cmu.edu/project/abstract/repos/maker
+[submodule "ext/libmspconsole"]
+	path = ext/libmspconsole
+	url = /afs/ece.cmu.edu/project/abstract/repos/libmspconsole
+[submodule "ext/libmsp"]
+	path = ext/libmsp
+	url = /afs/ece.cmu.edu/project/abstract/repos/libmsp
+[submodule "ext/libmspuartlink"]
+	path = ext/libmspuartlink
+	url = /afs/ece.cmu.edu/project/abstract/repos/libmspuartlink
+[submodule "ext/libfxl"]
+	path = ext/libfxl
+	url = /afs/ece.cmu.edu/project/abstract/repos/libfxl
+[submodule "ext/libchain"]
+	path = ext/libchain
+	url = /afs/ece.cmu.edu/project/abstract/repos/libchain
+[submodule "ext/libcapybara"]
+	path = ext/libcapybara
+	url = /afs/ece.cmu.edu/project/abstract/repos/libcapybara
+[submodule "ext/libmspware"]
+	path = ext/libmspware
+	url = /afs/ece.cmu.edu/project/abstract/repos/libmspware
+[submodule "ext/libmcppot"]
+	path = ext/libmcppot
+	url = /afs/ece.cmu.edu/project/abstract/repos/libmcppot
+[submodule "ext/libhmc"]
+	path = ext/libhmc
+	url = /afs/ece.cmu.edu/project/abstract/repos/libhmc
