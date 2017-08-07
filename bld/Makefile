@@ -1,8 +1,7 @@
-EXEC = gesture
+EXEC = hmc
 
 OBJECTS = \
 	main.o\
-	proximity.o\
 
 DEPS += \
 	libchain\

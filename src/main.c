@@ -30,7 +30,6 @@
 #include <libcapybara/reconfig.h>
 #include <libcapybara/power.h>
 
-#include "proximity.h"
 #include "pins.h"
 //Left here for now...
 //#include <libwispbase/wisp-base.h>
@@ -45,9 +44,46 @@
 #define WATCHPOINT(...)
 #endif
 
+#define CNTPWR
+#define PRECHRG 1
+#define FXDLRG 2
+#define FXDRSP 3
+#define RECFG 4
+#define TEST 5
+#define CNT 0
+
+#define PWRCFG CNT
+#define SEND_GEST 1
+#define LOG_PROX 0
+#define DEFAULT_CFG 							0b111
+#define PROX_ONLY 0
+
 TASK(1, task_init)
 TASK(2, task_hmc, PREBURST, HIGHP, LOWP)
 TASK(3, task_all, BURST)
+
+void i2c_setup(void) {
+  /*
+  * Select Port 1
+  * Set Pin 6, 7 to input Secondary Module Function:
+  *   (UCB0SIMO/UCB0SDA, UCB0SOMI/UCB0SCL)
+  */
+    GPIO_setAsPeripheralModuleFunctionInputPin(
+    GPIO_PORT_P1,
+    GPIO_PIN6 + GPIO_PIN7,
+    GPIO_SECONDARY_MODULE_FUNCTION
+  );
+
+  EUSCI_B_I2C_initMasterParam param = {0};
+  param.selectClockSource = EUSCI_B_I2C_CLOCKSOURCE_SMCLK;
+  param.i2cClk = CS_getSMCLK();
+  param.dataRate = EUSCI_B_I2C_SET_DATA_RATE_400KBPS;
+  param.byteCounterThreshold = 0;
+  param.autoSTOPGeneration = EUSCI_B_I2C_NO_AUTO_STOP;
+
+  EUSCI_B_I2C_initMaster(EUSCI_B0_BASE, &param);
+}
+
 
 void _capybara_handler(void) {
     msp_watchdog_disable();
@@ -90,10 +126,11 @@ void _capybara_handler(void) {
     GPIO(PORT_DEBUG, DIR) |= BIT(PIN_DEBUG);
 #elif BOARD_MAJOR == 1 && BOARD_MINOR == 1
     INIT_CONSOLE();
-    //LOG2("i2c init\r\n");
+    PRINTF("i2c init\r\n");
     i2c_setup();
-
-    //LOG2("fxl init\r\n");
+    PRINTF("Entering Magneto init!\r\n");
+    magnetometer_init();
+    LOG2("fxl init\r\n");
     fxl_init();
 
     //LOG2("RADIO_SW\r\n");
@@ -153,17 +190,34 @@ void init()
   LOG2("Done handler\r\n");
 }
 
+void task_init()
+{
+  LOG("In task init\r\n");
+  TRANSITION_TO(task_hmc);
+}
+
 void task_hmc()
 {
   magnet_t temp;
+  //i2c_setup();
+  //LOG("Entering magnetometer init!\r\n");
+  //magnetometer_init();
+  LOG("Reading magneto!\r\n");
   magnetometer_read(&temp);
   LOG("Magneto vals = %u %u %u \r\n",temp.x,temp.y,temp.z);
-
-  if(temp.x > 0xFF){
-    TRANSITION_TO(task_all);
+  //Add these here b/c it's screwing stuff up again...
+  //fxl_init();
+  //fxl_pull_up(BIT_CCS_WAKE);
+  delay(240000);
+  //delay(5000000);
+  //delay(5000000);
+  LOG("End delay\r\n");
+  if(0){
+    LOG("DUMMY!\r\n");
   }
   else{
-    TRANSITION_TO(task_sample);
+    LOG("In transition_to!\r\n");
+    TRANSITION_TO(task_hmc);
   }
 }
 
@@ -173,7 +227,7 @@ void task_all()
   delay(5000000);
   delay(5000000);
 
-  TRANSITION_TO(task_sample);
+  TRANSITION_TO(task_hmc);
 }
 
 
