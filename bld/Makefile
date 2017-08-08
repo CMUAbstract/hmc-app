@@ -13,6 +13,7 @@ DEPS += \
 	libmsp \
   libfxl\
   libhmc\
+  libapds\
 # libwispbase\
 
 export MAIN_CLOCK_FREQ = 8000000

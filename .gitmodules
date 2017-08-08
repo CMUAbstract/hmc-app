@@ -31,3 +31,6 @@
 [submodule "ext/libhmc"]
 	path = ext/libhmc
 	url = /afs/ece.cmu.edu/project/abstract/repos/libhmc
+[submodule "ext/libapds"]
+	path = ext/libapds
+	url = /afs/ece.cmu.edu/project/abstract/repos/libapds/

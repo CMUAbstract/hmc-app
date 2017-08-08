@@ -29,10 +29,11 @@
 #include <libcapybara/capybara.h>
 #include <libcapybara/reconfig.h>
 #include <libcapybara/power.h>
+#include <libapds/proximity.h>
 
 #include "pins.h"
-//Left here for now...
-//#include <libwispbase/wisp-base.h>
+
+#define SERIES_LEN 8
 
 #ifdef CONFIG_LIBEDB_PRINTF
 #include <libedb/edb.h>
@@ -58,9 +59,23 @@
 #define DEFAULT_CFG 							0b111
 #define PROX_ONLY 0
 
+#define FXL_ADDR 0x43 // 100 0011
+#define FXL_REG_ID        0x01
+
 TASK(1, task_init)
 TASK(2, task_hmc, PREBURST, HIGHP, LOWP)
-TASK(3, task_all, BURST)
+TASK(3, task_dist_meas_report, BURST)
+
+typedef enum __attribute__((packed)) {
+    RADIO_CMD_SET_ADV_PAYLOAD = 0,
+} radio_cmd_t;
+
+typedef struct __attribute__((packed)) {
+    radio_cmd_t cmd;
+    uint8_t series[SERIES_LEN];
+} radio_pkt_t;
+
+static radio_pkt_t radio_pkt;
 
 void i2c_setup(void) {
   /*
@@ -84,6 +99,68 @@ void i2c_setup(void) {
   EUSCI_B_I2C_initMaster(EUSCI_B0_BASE, &param);
 }
 
+static inline void radio_on()
+{
+#if BOARD_MAJOR == 1 && BOARD_MINOR == 0
+
+#if PORT_RADIO_SW != PORT_RADIO_RST // we assume this below
+#error Unexpected pin config: RAD_SW and RAD_RST not on same port
+#endif // PORT_RADIO_SW != PORT_RADIO_RST
+
+    GPIO(PORT_RADIO_SW, OUT) |= BIT(PIN_RADIO_SW) | BIT(PIN_RADIO_RST);
+    GPIO(PORT_RADIO_RST, OUT) &= ~BIT(PIN_RADIO_RST);
+
+#elif BOARD_MAJOR == 1 && BOARD_MINOR == 1
+    fxl_set(BIT_RADIO_SW | BIT_RADIO_RST);
+    fxl_clear(BIT_RADIO_RST);
+
+#else // BOARD_{MAJOR,MINOR}
+#error Unsupported board: do not know how to turn off radio (see BOARD var)
+#endif // BOARD_{MAJOR,MINOR}
+}
+
+static inline void radio_off()
+{
+#if BOARD_MAJOR == 1 && BOARD_MINOR == 0
+    GPIO(PORT_RADIO_SW, OUT) &= ~BIT(PIN_RADIO_SW);
+#elif BOARD_MAJOR == 1 && BOARD_MINOR == 1
+    fxl_clear(BIT_RADIO_SW);
+#else // BOARD_{MAJOR,MINOR}
+#error Unsupported board: do not know how to turn on radio (see BOARD var)
+#endif // BOARD_{MAJOR,MINOR}
+}
+
+void fxl_test(void){
+  while(EUSCI_B_I2C_isBusBusy(EUSCI_B0_BASE));
+  
+  EUSCI_B_I2C_setSlaveAddress(EUSCI_B0_BASE, FXL_ADDR);
+
+  EUSCI_B_I2C_setMode(EUSCI_B0_BASE, EUSCI_B_I2C_TRANSMIT_MODE);
+
+  EUSCI_B_I2C_enable(EUSCI_B0_BASE);
+
+  while(EUSCI_B_I2C_isBusBusy(EUSCI_B0_BASE));
+
+  EUSCI_B_I2C_masterSendSingleByte(EUSCI_B0_BASE, FXL_REG_ID);
+
+  while(EUSCI_B_I2C_isBusBusy(EUSCI_B0_BASE));
+
+  EUSCI_B_I2C_setMode(EUSCI_B0_BASE, EUSCI_B_I2C_RECEIVE_MODE);
+
+  //EUSCI_B_I2C_enable(EUSCI_B0_BASE);
+  
+  EUSCI_B_I2C_masterReceiveStart(EUSCI_B0_BASE);
+    
+  uint8_t id  = EUSCI_B_I2C_masterReceiveSingle(EUSCI_B0_BASE);
+  
+  //while(EUSCI_B_I2C_isBusBusy(EUSCI_B0_BASE));
+  
+  EUSCI_B_I2C_masterReceiveMultiByteStop(EUSCI_B0_BASE);
+  
+  while(EUSCI_B_I2C_isBusBusy(EUSCI_B0_BASE));
+  
+  PRINTF("[fxl test] FXL Id = %x \r\n",id);
+}
 
 void _capybara_handler(void) {
     msp_watchdog_disable();
@@ -126,20 +203,19 @@ void _capybara_handler(void) {
     GPIO(PORT_DEBUG, DIR) |= BIT(PIN_DEBUG);
 #elif BOARD_MAJOR == 1 && BOARD_MINOR == 1
     INIT_CONSOLE();
-    PRINTF("i2c init\r\n");
+    PRINTF("\r\n[main] Start\r\n******** \r\ni2c init\r\n");
     i2c_setup();
-    PRINTF("Entering Magneto init!\r\n");
-    magnetometer_init();
-    LOG2("fxl init\r\n");
+    
+    LOG2("[main] fxl full init\r\n");
     fxl_init();
-
-    //LOG2("RADIO_SW\r\n");
-
     fxl_out(BIT_PHOTO_SW);
     fxl_out(BIT_RADIO_SW);
     fxl_out(BIT_RADIO_RST);
     fxl_out(BIT_APDS_SW);
     fxl_pull_up(BIT_CCS_WAKE);
+    
+    LOG2("[main] magneto init post fxl\r\n");
+    magnetometer_init();
     P3OUT &= ~(BIT5 | BIT6 | BIT7);
     P3DIR |= (BIT5 | BIT6 | BIT7);
 
@@ -198,22 +274,22 @@ void task_init()
 
 void task_hmc()
 {
+  LOG("[main] In task hmc\r\n");
   magnet_t temp;
-  //i2c_setup();
-  //LOG("Entering magnetometer init!\r\n");
-  //magnetometer_init();
-  LOG("Reading magneto!\r\n");
+  LOG2("[main] Magneto init!\r\n");
+  magnetometer_init();
+  LOG2("[main] Reading magneto!\r\n");
   magnetometer_read(&temp);
-  LOG("Magneto vals = %u %u %u \r\n",temp.x,temp.y,temp.z);
-  //Add these here b/c it's screwing stuff up again...
-  //fxl_init();
-  //fxl_pull_up(BIT_CCS_WAKE);
+  LOG("Magneto vals = %i %i %i %u\r\n",temp.x,temp.y,temp.z,temp.z < -1000);
+  //Delay for debuggability
   delay(240000);
-  //delay(5000000);
-  //delay(5000000);
+  delay(240000);
+  delay(240000);
   LOG("End delay\r\n");
-  if(0){
-    LOG("DUMMY!\r\n");
+  if(temp.z < -2000){
+  //if(0){
+    delay(240000);
+    TRANSITION_TO(task_dist_meas_report);
   }
   else{
     LOG("In transition_to!\r\n");
@@ -221,14 +297,62 @@ void task_hmc()
   }
 }
 
-void task_all()
+void task_dist_meas_report()
 {
-  LOG("In task all!\r\n");
-  delay(5000000);
-  delay(5000000);
+  LOG("[main] In task dist meas + report\r\n");
+  uint8_t proxVal;
+  fxl_test();
+  LOG2("[main] Post fxl_test\r\n");
+  fxl_set(BIT_APDS_SW);
+  msp_sleep(30);
+  LOG2("[main] Post fxl_set\r\n");
+  proximity_init();
+  enableProximitySensor();
+  enableGesture();
+  disableGesture();
+  delay(240000);
+  LOG("Running prox init!\r\n");
+  proximity_init();
+  enlllableProximitySensor();
+  delay(240000);
+  LOG("Reading prox!\r\n");
+  uint8_t test = readProximity();
+  LOG("My proxVal = %u\r\n",test);
+  // Delay 5 sec so we can see the output
+  __delay_cycles(40000000);
+  uint8_t len = 8;
+  for(int i = 1; i < len; i++)
+    radio_pkt.series[i] = test;
+  fxl_init();
+  fxl_out(BIT_PHOTO_SW);
+  fxl_out(BIT_RADIO_SW);
+  fxl_out(BIT_RADIO_RST);
+  fxl_out(BIT_APDS_SW);
+  fxl_pull_up(BIT_CCS_WAKE);
 
+  fxl_clear(BIT_APDS_SW);
+
+  LOG("Initializing radio!\r\n");
+  radio_pkt.series[0] = 0xAA;
+  radio_pkt.series[1] = 0xEE;
+  radio_on();
+  msp_sleep(400); // ~15ms @ ACLK/8
+  //msp_sleep(64); // ~15ms @ ACLK/8
+  LOG("Opening uart link!\r\n");
+  uartlink_open_tx();
+  uartlink_send((uint8_t *)&radio_pkt.cmd, sizeof(radio_pkt.cmd) + len);
+  uartlink_close();
+
+  // TODO: wait until radio is finished; for now, wait for 0.25sec
+  msp_sleep(2048);
+  radio_off();
+
+  // Turn on LED? This is shaping up to be pretty cheap
+  LOG("radio finish!\r\n");
   TRANSITION_TO(task_hmc);
 }
+
+
 
 
 ENTRY_TASK(task_init)
