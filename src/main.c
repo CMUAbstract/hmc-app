@@ -18,6 +18,8 @@
 #include <libmsp/uart.h>
 #include <libmspuartlink/uartlink.h>
 #include <libhmc/magnetometer.h>
+#include <libmspmath/math.h> 
+
 
 #if BOARD_MAJOR == 1 && BOARD_MINOR == 1
 #include <libfxl/fxl6408.h>
@@ -35,6 +37,16 @@
 
 #define SERIES_LEN 8
 
+// 2 ^ (WINDOW_DIV) + 1 = WINDOW_LEN
+#define WINDOW_LEN 5
+#define WINDOW_DIV 2
+
+#define EVENT_THRESH 1000
+#define ALERT_TH_LO_1 -9000
+#define ALERT_TH_LO_2 -7000
+#define ALERT_TH_HI_1 9000
+#define ALERT_TH_HI_2 7000
+
 #ifdef CONFIG_LIBEDB_PRINTF
 #include <libedb/edb.h>
 #endif
@@ -45,7 +57,9 @@
 #define WATCHPOINT(...)
 #endif
 
-#define CNTPWR
+#define TESTRUN 0
+
+//#define CNTPWR
 #define PRECHRG 1
 #define FXDLRG 2
 #define FXDRSP 3
@@ -53,7 +67,7 @@
 #define TEST 5
 #define CNT 0
 
-#define PWRCFG CNT
+#define PWRCFG PRECHRG
 #define SEND_GEST 1
 #define LOG_PROX 0
 #define DEFAULT_CFG 							0b111
@@ -62,9 +76,25 @@
 #define FXL_ADDR 0x43 // 100 0011
 #define FXL_REG_ID        0x01
 
+#if  PWRCFG == PRECHRG
 TASK(1, task_init)
 TASK(2, task_hmc, PREBURST, HIGHP, LOWP)
 TASK(3, task_dist_meas_report, BURST)
+#elif PWRCFG == RECFG
+TASK(1, task_init)
+TASK(2, task_hmc, CONFIGD, LOWP)
+TASK(3, task_dist_meas_report, HIGHP)
+#else
+TASK(1, task_init)
+TASK(2, task_hmc)
+TASK(3, task_dist_meas_report)
+#endif
+
+struct msg_mag_val{
+  CHAN_FIELD(uint16_t, mag_val);
+};
+
+CHANNEL(task_hmc,task_dist_meas_report,msg_mag_val);
 
 typedef enum __attribute__((packed)) {
     RADIO_CMD_SET_ADV_PAYLOAD = 0,
@@ -76,6 +106,16 @@ typedef struct __attribute__((packed)) {
 } radio_pkt_t;
 
 static radio_pkt_t radio_pkt;
+
+int abs_int(int in){
+  LOG2("Int size = %i \r\n",sizeof(int));
+  int out;
+  if(in < 0)
+    out = in * -1;
+  else
+    out = in;
+  return out;
+}
 
 void i2c_setup(void) {
   /*
@@ -132,7 +172,7 @@ static inline void radio_off()
 
 void fxl_test(void){
   while(EUSCI_B_I2C_isBusBusy(EUSCI_B0_BASE));
-  
+
   EUSCI_B_I2C_setSlaveAddress(EUSCI_B0_BASE, FXL_ADDR);
 
   EUSCI_B_I2C_setMode(EUSCI_B0_BASE, EUSCI_B_I2C_TRANSMIT_MODE);
@@ -147,19 +187,15 @@ void fxl_test(void){
 
   EUSCI_B_I2C_setMode(EUSCI_B0_BASE, EUSCI_B_I2C_RECEIVE_MODE);
 
-  //EUSCI_B_I2C_enable(EUSCI_B0_BASE);
-  
   EUSCI_B_I2C_masterReceiveStart(EUSCI_B0_BASE);
-    
+
   uint8_t id  = EUSCI_B_I2C_masterReceiveSingle(EUSCI_B0_BASE);
-  
-  //while(EUSCI_B_I2C_isBusBusy(EUSCI_B0_BASE));
-  
+
   EUSCI_B_I2C_masterReceiveMultiByteStop(EUSCI_B0_BASE);
-  
+
   while(EUSCI_B_I2C_isBusBusy(EUSCI_B0_BASE));
-  
-  PRINTF("[fxl test] FXL Id = %x \r\n",id);
+
+  LOG2("[fxl test] FXL Id = %x \r\n",id);
 }
 
 void _capybara_handler(void) {
@@ -203,9 +239,9 @@ void _capybara_handler(void) {
     GPIO(PORT_DEBUG, DIR) |= BIT(PIN_DEBUG);
 #elif BOARD_MAJOR == 1 && BOARD_MINOR == 1
     INIT_CONSOLE();
-    PRINTF("\r\n[main] Start\r\n******** \r\ni2c init\r\n");
+    LOG2("\r\n[main] Start\r\n******** \r\ni2c init\r\n");
     i2c_setup();
-    
+
     LOG2("[main] fxl full init\r\n");
     fxl_init();
     fxl_out(BIT_PHOTO_SW);
@@ -214,11 +250,10 @@ void _capybara_handler(void) {
     fxl_out(BIT_APDS_SW);
     fxl_pull_up(BIT_CCS_WAKE);
     
-    LOG2("[main] magneto init post fxl\r\n");
-    magnetometer_init();
+    // Prep debug pins
     P3OUT &= ~(BIT5 | BIT6 | BIT7);
     P3DIR |= (BIT5 | BIT6 | BIT7);
-
+    
     // SENSE_SW is present but is not electrically correct: do not use.
 #else // BOARD_{MAJOR,MINOR}
 #error Unsupported board: do not know what pins to configure (see BOARD var)
@@ -240,7 +275,7 @@ void _capybara_handler(void) {
 
 #if PWRCFG == FXDLRG
     //Use MEDP2 for SE version and MEDHIGHP for TE version
-    base_config.banks = MEDP2;
+    base_config.banks = 0xC;
 #elif PWRCFG == FXDSML
     base_config.banks = LOWP;
 #endif
@@ -249,7 +284,68 @@ void _capybara_handler(void) {
     capybara_config_banks(base_config.banks);
     capybara_wait_for_supply();
 #endif
-    LOG2("Gesture Test\r\n");
+    // Do non-essential inits here so we finish bank init before we run out of
+    // energy and faceplant
+    // Init magneto here
+    //magnetometer_init();
+    
+    //PRINTF("Mag Test\r\n");
+}
+
+void capybara_transition()
+{
+    // need to explore exactly how we want BURST tasks to be followed --> should
+    // we ever shutdown to reconfigure? Or should we always ride the burst wave
+    // until we're out of energy?
+#if (PWRCFG == PRECHRG) || (PWRCFG == RECFG) || (PWRCFG == TEST)
+
+    // Check previous burst state and register a finished burst
+    if(burst_status){
+        burst_status = 2;
+        //return;
+    }
+    task_cfg_spec_t curpwrcfg = curctx->task->spec_cfg;
+    switch(curpwrcfg){
+        case BURST:
+            if(!prechg_status){
+              PRINTF("Error! Running w/out precharge!\r\n");
+            }
+            prechg_status = 0;
+            capybara_config_banks(prechg_config.banks);
+            burst_status = 1;
+            break;
+
+        case PREBURST:
+            if(!prechg_status){
+                prechg_config.banks = curctx->task->precfg->banks;
+                capybara_config_banks(prechg_config.banks);
+                // Mark that we finished the config_banks_command
+                prechg_status = 1;
+                capybara_shutdown();
+                capybara_wait_for_supply();
+            }
+            //intentional fall through
+
+        case CONFIGD:
+
+            if(base_config.banks != curctx->task->opcfg->banks){
+                // Temp:
+                P3OUT |= BIT7;
+                base_config.banks = curctx->task->opcfg->banks;
+                capybara_config_banks(base_config.banks);
+                // Temp:
+                capybara_shutdown();
+                capybara_wait_for_supply();
+                P3OUT &= ~BIT7;
+            }
+            //Another intentional fall through
+
+        default:
+            break;
+    }
+#endif
+   //LOG("Running task %u \r\n",curctx->task->idx);
+
 }
 
 void delay(uint32_t cycles)
@@ -267,62 +363,124 @@ void init()
 }
 
 void task_init()
-{
+{ capybara_transition();
   LOG("In task init\r\n");
   TRANSITION_TO(task_hmc);
 }
 
+volatile int mag_init_flag = 0;
+
 void task_hmc()
-{
-  LOG("[main] In task hmc\r\n");
+{ capybara_transition();
   magnet_t temp;
+  int prev,diff=0;
+  //GPIO(3,OUT) |= BIT(5);
+  LOG("[main] In task hmc\r\n");
   LOG2("[main] Magneto init!\r\n");
-  magnetometer_init();
+  //GPIO(3,OUT) &= ~BIT(5);
   LOG2("[main] Reading magneto!\r\n");
-  magnetometer_read(&temp);
-  LOG("Magneto vals = %i %i %i %u\r\n",temp.x,temp.y,temp.z,temp.z < -1000);
-  //Delay for debuggability
-  delay(240000);
-  delay(240000);
-  delay(240000);
-  LOG("End delay\r\n");
-  if(temp.z < -2000){
-  //if(0){
-    delay(240000);
-    TRANSITION_TO(task_dist_meas_report);
+  if(!mag_init_flag){
+    mag_init_flag = 1;
+    magnetometer_init();
   }
-  else{
+  //for(unsigned i = 0; i < WINDOW_LEN; i++){
+    //prev = temp.z;
+    GPIO(3,OUT) |= BIT(5);
+    magnetometer_read(&temp);
+   
+    uint16_t out;
+    out = abs_int(temp.x);
+    
+    //sqrX = mult16(out,out);
+    //PRINTF("out= %u X=%i\r\n",out,temp.x);
+    out += abs_int(temp.y);
+    //sqrY = mult16(out,out);
+    //PRINTF("out= %u Y=%i\r\n",out,temp.y);
+    out += abs_int(temp.z);
+    //PRINTF("out= %u Z=%i\r\n",out,temp.z);
+    //sqrZ = mult16(out,out);
+    uint16_t mag;
+    //mag = sqrt16(sqrY + sqrZ); 
+#if TESTRUN 
+    PRINTF("magnitude = %u\r\n",out);
+#else
+   // Threshold check
+   /*
+    if(!(temp.z > ALERT_TH_HI_2 && temp.z < ALERT_TH_HI_1) && 
+              !(temp.z > ALERT_TH_LO_2 && temp.z < ALERT_TH_LO_1)){ */
+    PRINTF("magnitude = %u\r\n",out);
+    if(out > 50000){
+      CHAN_OUT1(uint16_t,mag_val,out,CH(task_hmc,task_dist_meas_report));
+      TRANSITION_TO(task_dist_meas_report);
+    }
+    //PRINTF("%i %i %i\r\n",temp.x,temp.y,temp.z);
+   /*
+   GPIO(3,OUT) &= ~BIT(5);
+    if(i){
+      diff += abs_int(temp.z - prev);
+    }  
+    */
+    //PRINTF("%i %i\r\n",window[i].z,i);
+    //LOG2("[main] Magneto vals = %i %i %i\r\n",window[i].x,window[i].y,window[i].z);
+  //}
+
+ /* for(unsigned i = WINDOW_LEN - 1; i > 0; i--){
+    int cur_diff  = window[i].z - window[i-1].z;
+    diff += cur_diff;
+    //PRINTF("[main] Current Diff = %i, running diff = %i \r\n",cur_diff,diff);
+  }
+  */
+  //diff = diff >> WINDOW_DIV;
+  //PRINTF("Avg div = %i \r\n",diff);
+  //if(diff > EVENT_THRESH){
+  //if(0){
+  //delay(240000);
+    //PRINTF("Avg div = %i \r\n",diff);
+//  }
+  //else{
+#endif //TESTRUN
     LOG("In transition_to!\r\n");
     TRANSITION_TO(task_hmc);
-  }
+  //}
 }
 
 void task_dist_meas_report()
-{
+{ capybara_transition();
+  int mag_val;
+  mag_val = *CHAN_IN1(int,mag_val,CH(task_hmc,task_dist_meas_report));
+  PRINTF("Got mag_val %u \r\n",mag_val);
   LOG("[main] In task dist meas + report\r\n");
-  uint8_t proxVal;
   fxl_test();
-  LOG2("[main] Post fxl_test\r\n");
-  fxl_set(BIT_APDS_SW);
+  LOG2("[main] Post fxl_test\r\n"); fxl_set(BIT_APDS_SW);
   msp_sleep(30);
   LOG2("[main] Post fxl_set\r\n");
   proximity_init();
   enableProximitySensor();
   enableGesture();
   disableGesture();
-  delay(240000);
+  //delay(240000);
   LOG("Running prox init!\r\n");
   proximity_init();
-  enlllableProximitySensor();
-  delay(240000);
+  enableProximitySensor();
+  //delay(240000);
   LOG("Reading prox!\r\n");
-  uint8_t test = readProximity();
-  LOG("My proxVal = %u\r\n",test);
+  uint8_t test = 0;
+  uint8_t max = 0;
+  for(unsigned i = 0; i < 64; i++){
+    GPIO(3,OUT) |= BIT(6);
+    test = readProximity();
+    __delay_cycles(24000);
+    if(test > max)
+      max = test;
+    //PRINTF("[main] proxVal = %u\r\n",test);
+    GPIO(3,OUT) &= ~BIT(6);
+  }
+  PRINTF("[main] Max prox reading = %u\r\n",max);
   // Delay 5 sec so we can see the output
-  __delay_cycles(40000000);
+  //__delay_cycles(40000000);
   uint8_t len = 8;
-  for(int i = 1; i < len; i++)
-    radio_pkt.series[i] = test;
+  //for(int i = 1; i < len; i++)
+  //  radio_pkt.series[i] = test;
   fxl_init();
   fxl_out(BIT_PHOTO_SW);
   fxl_out(BIT_RADIO_SW);
@@ -331,10 +489,16 @@ void task_dist_meas_report()
   fxl_pull_up(BIT_CCS_WAKE);
 
   fxl_clear(BIT_APDS_SW);
+  // Turn on LED before sending packet
+  GPIO(3,OUT) |= BIT(7);
+  __delay_cycles(4000000);
+  GPIO(3,OUT) &= ~BIT(7);
 
   LOG("Initializing radio!\r\n");
   radio_pkt.series[0] = 0xAA;
   radio_pkt.series[1] = 0xEE;
+  radio_pkt.series[2] = mag_val;
+  radio_pkt.series[3] = max;
   radio_on();
   msp_sleep(400); // ~15ms @ ACLK/8
   //msp_sleep(64); // ~15ms @ ACLK/8
@@ -348,7 +512,8 @@ void task_dist_meas_report()
   radio_off();
 
   // Turn on LED? This is shaping up to be pretty cheap
-  LOG("radio finish!\r\n");
+  PRINTF("RAdio finish!\r\n");
+  GPIO(3,OUT) &= BIT(6);
   TRANSITION_TO(task_hmc);
 }
 

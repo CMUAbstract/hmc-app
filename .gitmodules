@@ -34,3 +34,6 @@
 [submodule "ext/libapds"]
 	path = ext/libapds
 	url = /afs/ece.cmu.edu/project/abstract/repos/libapds/
+[submodule "ext/libmspmath"]
+	path = ext/libmspmath
+	url = /afs/ece.cmu.edu/project/abstract/repos/libmspmath
