@@ -79,7 +79,7 @@
 #if  PWRCFG == PRECHRG
 TASK(1, task_init)
 TASK(2, task_hmc, PREBURST, MEDHIGHP, LOWP)
-TASK(3, task_dist_meas_report, BURST, HIGHP)
+TASK(3, task_dist_meas_report, BURST, MEDHIGHP)
 #elif PWRCFG == RECFG
 TASK(1, task_init)
 TASK(2, task_hmc, CONFIGD, LOWP)
@@ -291,7 +291,7 @@ void _capybara_handler(void) {
 
 #if PWRCFG == FXDLRG
     //Use MEDP2 for SE version and MEDHIGHP for TE version
-    base_config.banks = MEDHIGHP;
+    base_config.banks = 0x7;
 #elif PWRCFG == FXDSML
     base_config.banks = LOWP;
 #endif
@@ -382,6 +382,7 @@ void delay(uint32_t cycles)
 void init()
 {
   _capybara_handler();
+  //while(1);
   LOG2("Done handler\r\n");
 }
 
