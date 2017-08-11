@@ -78,8 +78,8 @@
 
 #if  PWRCFG == PRECHRG
 TASK(1, task_init)
-TASK(2, task_hmc, PREBURST, HIGHP, LOWP)
-TASK(3, task_dist_meas_report, BURST)
+TASK(2, task_hmc, PREBURST, MEDHIGHP, LOWP)
+TASK(3, task_dist_meas_report, BURST, HIGHP)
 #elif PWRCFG == RECFG
 TASK(1, task_init)
 TASK(2, task_hmc, CONFIGD, LOWP)
@@ -94,7 +94,23 @@ struct msg_mag_val{
   CHAN_FIELD(uint16_t, mag_val);
 };
 
+struct msg_self_z_val{
+  SELF_CHAN_FIELD(int16_t, z);
+  SELF_CHAN_FIELD(uint16_t,pos_count);
+};
+#define FIELD_INIT_msg_self_z_val { \
+SELF_FIELD_INITIALIZER, \
+SELF_FIELD_INITIALIZER \
+}
+
+struct msg_z_val{
+  CHAN_FIELD(int16_t, z); 
+  CHAN_FIELD(uint16_t, pos_count); 
+};
+
 CHANNEL(task_hmc,task_dist_meas_report,msg_mag_val);
+CHANNEL(task_init,task_hmc,msg_z_val);
+SELF_CHANNEL(task_hmc,msg_self_z_val);
 
 typedef enum __attribute__((packed)) {
     RADIO_CMD_SET_ADV_PAYLOAD = 0,
@@ -275,7 +291,7 @@ void _capybara_handler(void) {
 
 #if PWRCFG == FXDLRG
     //Use MEDP2 for SE version and MEDHIGHP for TE version
-    base_config.banks = 0xC;
+    base_config.banks = MEDHIGHP;
 #elif PWRCFG == FXDSML
     base_config.banks = LOWP;
 #endif
@@ -305,22 +321,27 @@ void capybara_transition()
         //return;
     }
     task_cfg_spec_t curpwrcfg = curctx->task->spec_cfg;
+        LOG("start_cfg = %i:",base_config.banks);
     switch(curpwrcfg){
         case BURST:
-            if(!prechg_status){
+            /*if(!prechg_status){
               PRINTF("Error! Running w/out precharge!\r\n");
-            }
+            }*/
             prechg_status = 0;
-            capybara_config_banks(prechg_config.banks);
+            base_config.banks = curctx->task->opcfg->banks;
+            capybara_config_banks(base_config.banks);
             burst_status = 1;
+            capybara_wait_for_supply();
             break;
 
         case PREBURST:
             if(!prechg_status){
                 prechg_config.banks = curctx->task->precfg->banks;
                 capybara_config_banks(prechg_config.banks);
+                msp_sleep(30);
                 // Mark that we finished the config_banks_command
                 prechg_status = 1;
+                LOG("Precharging!\r\n");
                 capybara_shutdown();
                 capybara_wait_for_supply();
             }
@@ -329,14 +350,16 @@ void capybara_transition()
         case CONFIGD:
 
             if(base_config.banks != curctx->task->opcfg->banks){
-                // Temp:
-                P3OUT |= BIT7;
-                base_config.banks = curctx->task->opcfg->banks;
-                capybara_config_banks(base_config.banks);
-                // Temp:
+                GPIO(3,OUT) |= BIT(6);
+                capybara_bankmask_t temp_banks = curctx->task->opcfg->banks;
+                capybara_config_banks(temp_banks);
+                msp_sleep(30);
+                base_config.banks = temp_banks;
+                GPIO(3,OUT) &= ~BIT(6);
+                LOG("Configuring!\r\n");
                 capybara_shutdown();
                 capybara_wait_for_supply();
-                P3OUT &= ~BIT7;
+                  
             }
             //Another intentional fall through
 
@@ -365,15 +388,18 @@ void init()
 void task_init()
 { capybara_transition();
   LOG("In task init\r\n");
+  int16_t zero = 0;
+  CHAN_OUT1(int16_t, z, zero, CH(task_init,task_hmc));
   TRANSITION_TO(task_hmc);
 }
 
 volatile int mag_init_flag = 0;
 
 void task_hmc()
-{ capybara_transition();
+{ 
+  capybara_transition();
   magnet_t temp;
-  int prev,diff=0;
+  int16_t prev = *CHAN_IN2(uint16_t, z, CH(task_init,task_hmc),SELF_IN_CH(task_hmc));
   //GPIO(3,OUT) |= BIT(5);
   LOG("[main] In task hmc\r\n");
   LOG2("[main] Magneto init!\r\n");
@@ -388,56 +414,25 @@ void task_hmc()
     GPIO(3,OUT) |= BIT(5);
     magnetometer_read(&temp);
    
-    uint16_t out;
-    out = abs_int(temp.x);
+    uint16_t magY,magZ;
     
-    //sqrX = mult16(out,out);
-    //PRINTF("out= %u X=%i\r\n",out,temp.x);
-    out += abs_int(temp.y);
-    //sqrY = mult16(out,out);
-    //PRINTF("out= %u Y=%i\r\n",out,temp.y);
-    out += abs_int(temp.z);
-    //PRINTF("out= %u Z=%i\r\n",out,temp.z);
-    //sqrZ = mult16(out,out);
-    uint16_t mag;
-    //mag = sqrt16(sqrY + sqrZ); 
+    magY = abs_int(temp.y);
+    magZ = abs_int(temp.z); 
 #if TESTRUN 
-    PRINTF("magnitude = %u\r\n",out);
+    PRINTF("%i %i %i\r\n",temp.x,temp.y,temp.z);
 #else
    // Threshold check
-   /*
-    if(!(temp.z > ALERT_TH_HI_2 && temp.z < ALERT_TH_HI_1) && 
-              !(temp.z > ALERT_TH_LO_2 && temp.z < ALERT_TH_LO_1)){ */
-    PRINTF("magnitude = %u\r\n",out);
-    if(out > 50000){
-      CHAN_OUT1(uint16_t,mag_val,out,CH(task_hmc,task_dist_meas_report));
+    if(temp.z > 256){
+      CHAN_OUT1(int16_t, z, temp.z,SELF_OUT_CH(task_hmc));
+    }
+
+    PRINTF("%i %i %i\r\n",temp.x,temp.y,temp.z);
+    if(temp.z < -1000 && prev > 1000 /*&& magY > 512*/){
+      CHAN_OUT1(uint16_t,mag_val,magZ,CH(task_hmc,task_dist_meas_report));
+      uint16_t zero = 0;
+      CHAN_OUT1(int16_t, z, zero,SELF_OUT_CH(task_hmc));
       TRANSITION_TO(task_dist_meas_report);
     }
-    //PRINTF("%i %i %i\r\n",temp.x,temp.y,temp.z);
-   /*
-   GPIO(3,OUT) &= ~BIT(5);
-    if(i){
-      diff += abs_int(temp.z - prev);
-    }  
-    */
-    //PRINTF("%i %i\r\n",window[i].z,i);
-    //LOG2("[main] Magneto vals = %i %i %i\r\n",window[i].x,window[i].y,window[i].z);
-  //}
-
- /* for(unsigned i = WINDOW_LEN - 1; i > 0; i--){
-    int cur_diff  = window[i].z - window[i-1].z;
-    diff += cur_diff;
-    //PRINTF("[main] Current Diff = %i, running diff = %i \r\n",cur_diff,diff);
-  }
-  */
-  //diff = diff >> WINDOW_DIV;
-  //PRINTF("Avg div = %i \r\n",diff);
-  //if(diff > EVENT_THRESH){
-  //if(0){
-  //delay(240000);
-    //PRINTF("Avg div = %i \r\n",diff);
-//  }
-  //else{
 #endif //TESTRUN
     LOG("In transition_to!\r\n");
     TRANSITION_TO(task_hmc);
@@ -492,12 +487,14 @@ void task_dist_meas_report()
   // Turn on LED before sending packet
   GPIO(3,OUT) |= BIT(7);
   __delay_cycles(4000000);
+  //__delay_cycles(2000000);
   GPIO(3,OUT) &= ~BIT(7);
 
   LOG("Initializing radio!\r\n");
   radio_pkt.series[0] = 0xAA;
   radio_pkt.series[1] = 0xEE;
-  radio_pkt.series[2] = mag_val;
+  radio_pkt.series[2] = mag_val&0xFF00;
+  radio_pkt.series[3] = mag_val&0xFF;
   radio_pkt.series[3] = max;
   radio_on();
   msp_sleep(400); // ~15ms @ ACLK/8
