@@ -55,8 +55,7 @@
 #include <libedb/edb.h>
 #else
 #define WATCHPOINT(...)
-#endif
-
+#endif 
 #define TESTRUN 0
 
 //#define CNTPWR
@@ -67,7 +66,7 @@
 #define TEST 5
 #define CNT 0
 
-#define PWRCFG PRECHRG
+#define PWRCFG RECFG
 #define SEND_GEST 1
 #define LOG_PROX 0
 #define DEFAULT_CFG 							0b111
@@ -78,12 +77,12 @@
 
 #if  PWRCFG == PRECHRG
 TASK(1, task_init)
-TASK(2, task_hmc, PREBURST, MEDHIGHP, LOWP)
+TASK(2, task_hmc, PREBURST,MEDHIGHP, LOWP)
 TASK(3, task_dist_meas_report, BURST, MEDHIGHP)
 #elif PWRCFG == RECFG
 TASK(1, task_init)
 TASK(2, task_hmc, CONFIGD, LOWP)
-TASK(3, task_dist_meas_report, HIGHP)
+TASK(3, task_dist_meas_report,CONFIGD, MEDHIGHP)
 #else
 TASK(1, task_init)
 TASK(2, task_hmc)
@@ -277,7 +276,7 @@ void _capybara_handler(void) {
 
 
 #if PWRCFG == PRECHRG || PWRCFG == TEST
-   if(prechg_status){
+  if(prechg_status){
     capybara_config_banks(prechg_config.banks);
     //capybara_wait_for_banks();
     msp_sleep(30);
@@ -287,6 +286,7 @@ void _capybara_handler(void) {
         prechg_status = 0;
         burst_status = 0;
    }
+
 #endif //PWRCFG
 
 #if PWRCFG == FXDLRG
@@ -350,12 +350,12 @@ void capybara_transition()
         case CONFIGD:
 
             if(base_config.banks != curctx->task->opcfg->banks){
-                GPIO(3,OUT) |= BIT(6);
+                GPIO(3,OUT) |= BIT(5);
                 capybara_bankmask_t temp_banks = curctx->task->opcfg->banks;
                 capybara_config_banks(temp_banks);
                 msp_sleep(30);
                 base_config.banks = temp_banks;
-                GPIO(3,OUT) &= ~BIT(6);
+                GPIO(3,OUT) &= ~BIT(5);
                 LOG("Configuring!\r\n");
                 capybara_shutdown();
                 capybara_wait_for_supply();
@@ -382,7 +382,7 @@ void delay(uint32_t cycles)
 void init()
 {
   _capybara_handler();
-  //while(1);
+ // while(1);
   LOG2("Done handler\r\n");
 }
 
@@ -414,6 +414,7 @@ void task_hmc()
     //prev = temp.z;
     GPIO(3,OUT) |= BIT(5);
     magnetometer_read(&temp);
+    GPIO(3,OUT) &= ~BIT(5);
    
     uint16_t magY,magZ;
     
@@ -423,12 +424,12 @@ void task_hmc()
     PRINTF("%i %i %i\r\n",temp.x,temp.y,temp.z);
 #else
    // Threshold check
-    if(temp.z > 256){
+    if(magZ > 256){
       CHAN_OUT1(int16_t, z, temp.z,SELF_OUT_CH(task_hmc));
     }
 
-    PRINTF("%i %i %i\r\n",temp.x,temp.y,temp.z);
-    if(temp.z < -1000 && prev > 1000 /*&& magY > 512*/){
+    //PRINTF("%i %i %i %i\r\n",temp.x,temp.y,temp.z,prev);
+    if((temp.z < -1000 && prev > 1000 ) ||( temp.z > 1000 && prev < -1000) ){
       CHAN_OUT1(uint16_t,mag_val,magZ,CH(task_hmc,task_dist_meas_report));
       uint16_t zero = 0;
       CHAN_OUT1(int16_t, z, zero,SELF_OUT_CH(task_hmc));
@@ -462,7 +463,7 @@ void task_dist_meas_report()
   LOG("Reading prox!\r\n");
   uint8_t test = 0;
   uint8_t max = 0;
-  for(unsigned i = 0; i < 64; i++){
+  for(unsigned i = 0; i < 32; i++){
     GPIO(3,OUT) |= BIT(6);
     test = readProximity();
     __delay_cycles(24000);
@@ -487,16 +488,16 @@ void task_dist_meas_report()
   fxl_clear(BIT_APDS_SW);
   // Turn on LED before sending packet
   GPIO(3,OUT) |= BIT(7);
-  __delay_cycles(4000000);
-  //__delay_cycles(2000000);
+  //__delay_cycles(4000000);
+  __delay_cycles(2000000);
   GPIO(3,OUT) &= ~BIT(7);
 
   LOG("Initializing radio!\r\n");
   radio_pkt.series[0] = 0xAA;
   radio_pkt.series[1] = 0xEE;
-  radio_pkt.series[2] = mag_val&0xFF00;
-  radio_pkt.series[3] = mag_val&0xFF;
-  radio_pkt.series[3] = max;
+  radio_pkt.series[2] = mag_val >> 8;
+  radio_pkt.series[3] = mag_val;
+  radio_pkt.series[4] = max;
   radio_on();
   msp_sleep(400); // ~15ms @ ACLK/8
   //msp_sleep(64); // ~15ms @ ACLK/8
